@@ -1,0 +1,193 @@
+<?php
+
+namespace App\Console\Commands;
+
+use Illuminate\Console\Command;
+use Illuminate\Support\Facades\File;
+
+class MakeRepositoryCommand extends Command
+{
+    protected $signature = 'make:repository
+                            {group : Admin, Portal or Frontend}
+                            {name  : e.g. Book}';
+
+    protected $description = 'Create interface, Eloquent class and register binding';
+
+    public function handle(): int
+    {
+        $group    = ucfirst(strtolower($this->argument('group')));
+        $name     = ucfirst($this->argument('name'));
+
+        $allowedGroups = ['Admin', 'Portal', 'Frontend'];
+
+        if (!in_array($group, $allowedGroups)) {
+            $this->error("Group must be one of: " . implode(', ', $allowedGroups));
+            return Command::FAILURE;
+        }
+
+        $this->makeInterface($group, $name);
+        $this->makeEloquent($group, $name);
+        $this->makeService($group, $name);
+        $this->registerBinding($group, $name);
+
+        $this->newLine();
+        $this->info("✓ {$group}{$name} repository scaffold complete.");
+
+        return Command::SUCCESS;
+    }
+
+    // ─────────────────────────────────────────
+    // 1. Interface
+    // ─────────────────────────────────────────
+    private function makeInterface(string $group, string $name): void
+    {
+        $className = "{$group}{$name}RepositoryInterface";
+        $path      = app_path("Repositories/Contracts/{$group}/{$className}.php");
+
+        if (File::exists($path)) {
+            $this->warn("  [skip] Interface already exists: Repositories/Contracts/{$group}/{$className}.php");
+            return;
+        }
+
+        File::ensureDirectoryExists(dirname($path));
+
+        File::put($path, $this->interfaceStub($group, $name, $className));
+
+        $this->line("  <fg=green>[created]</> Repositories/Contracts/{$group}/{$className}.php");
+    }
+
+    // ─────────────────────────────────────────
+    // 2. Eloquent Repository
+    // ─────────────────────────────────────────
+    private function makeEloquent(string $group, string $name): void
+    {
+        $className     = "{$group}{$name}Repository";
+        $interfaceName = "{$group}{$name}RepositoryInterface";
+        $path          = app_path("Repositories/Eloquent/{$group}/{$className}.php");
+
+        if (File::exists($path)) {
+            $this->warn("  [skip] Eloquent class already exists: Repositories/Eloquent/{$group}/{$className}.php");
+            return;
+        }
+
+        File::ensureDirectoryExists(dirname($path));
+
+        File::put($path, $this->eloquentStub($group, $name, $className, $interfaceName));
+
+        $this->line("  <fg=green>[created]</> Repositories/Eloquent/{$group}/{$className}.php");
+    }
+
+    // ─────────────────────────────────────────
+    // 3. Service
+    // ─────────────────────────────────────────
+    private function makeService(string $group, string $name): void
+    {
+        $className     = "{$group}{$name}Service";
+        $repoInterface = "{$group}{$name}RepositoryInterface";
+        $path          = app_path("Services/{$group}/{$className}.php");
+
+        if (File::exists($path)) {
+            $this->warn("  [skip] Service already exists: Services/{$group}/{$className}.php");
+            return;
+        }
+
+        File::ensureDirectoryExists(dirname($path));
+
+        File::put($path, $this->serviceStub($group, $name, $className, $repoInterface));
+
+        $this->line("  <fg=green>[created]</> Services/{$group}/{$className}.php");
+    }
+
+    // ─────────────────────────────────────────
+    // 4. Auto-register binding
+    // ─────────────────────────────────────────
+    private function registerBinding(string $group, string $name): void
+    {
+        $providerPath  = app_path('Providers/AppServiceProvider.php');
+        $content       = File::get($providerPath);
+
+        $interfaceFQN  = "App\\Repositories\\Contracts\\{$group}\\{$group}{$name}RepositoryInterface";
+        $eloquentFQN   = "App\\Repositories\\Eloquent\\{$group}\\{$group}{$name}Repository";
+        $interfaceClass = "{$group}{$name}RepositoryInterface";
+        $eloquentClass  = "{$group}{$name}Repository";
+
+        if (str_contains($content, $interfaceClass . '::class')) {
+            $this->warn("  [skip] Binding already registered in AppServiceProvider.");
+            return;
+        }
+
+        // Add use statements
+        $useBlock = "use {$interfaceFQN};\nuse {$eloquentFQN};";
+        $content  = preg_replace(
+            '/(^use [^\n]+;\n)(?!use )/m',
+            "$1{$useBlock}\n",
+            $content,
+            1
+        );
+
+        // Add binding inside register()
+        $binding = "\n        \$this->app->bind({$interfaceClass}::class, {$eloquentClass}::class);";
+        $content = preg_replace(
+            '/(public function register\(\).*?\{)/s',
+            "$1{$binding}",
+            $content
+        );
+
+        File::put($providerPath, $content);
+
+        $this->line("  <fg=green>[bound]</>   AppServiceProvider → {$interfaceClass}");
+    }
+
+    // ─────────────────────────────────────────
+    // Stubs
+    // ─────────────────────────────────────────
+    private function interfaceStub(string $group, string $name, string $className): string
+    {
+        return <<<PHP
+        <?php
+
+        namespace App\Repositories\Contracts\\{$group};
+
+        interface {$className}
+        {
+            // Define {$group} {$name} contract methods here
+        }
+        PHP;
+    }
+
+    private function eloquentStub(string $group, string $name, string $className, string $interfaceName): string
+    {
+        return <<<PHP
+        <?php
+
+        namespace App\Repositories\Eloquent\\{$group};
+
+        use App\Repositories\Contracts\\{$group}\\{$interfaceName};
+
+        class {$className} implements {$interfaceName}
+        {
+            // Implement {$group} {$name} repository methods here
+        }
+        PHP;
+    }
+
+    private function serviceStub(string $group, string $name, string $className, string $repoInterface): string
+    {
+        return <<<PHP
+        <?php
+
+        namespace App\Services\\{$group};
+
+        use App\Repositories\Contracts\\{$group}\\{$repoInterface};
+
+        class {$className}
+        {
+            public function __construct(
+                private {$repoInterface} \$repository
+            ) {}
+
+            // Add {$group} {$name} business logic here
+        }
+        PHP;
+    }
+}

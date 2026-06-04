@@ -1,0 +1,52 @@
+<?php
+
+namespace App\Repositories;
+
+use App\Repositories\Panel\Post\PanelPostRepository;
+use App\Repositories\Panel\Comment\PanelCommentRepository;
+use App\Repositories\Public\Post\PublicPostRepository;
+use App\Repositories\Public\Comment\PublicCommentRepository;
+
+use App\Services\Post\PanelPostService;
+use App\Services\Post\PublicPostService;
+use App\Services\Comment\PanelCommentService;
+use App\Services\Comment\PublicCommentService;
+
+use App\Contracts\Repositories\Post\PostReadRepositoryInterface;
+use App\Contracts\Repositories\Post\PostWriteRepositoryInterface;
+use App\Contracts\Repositories\Comment\CommentReadRepositoryInterface;
+use App\Contracts\Repositories\Comment\CommentWriteRepositoryInterface;
+
+class BindingMap
+{
+    /**
+     * [ ServiceClass => [ Interface => Repository ] ]
+     *
+     * புதிய Entity → இங்கே மட்டும் சேர்
+     * Provider-ஐ தொட வேண்டாம்
+     */
+    public static array $map = [
+
+        // ── Panel ──────────────────────────────────────────────────
+        PanelPostService::class => [
+            PostReadRepositoryInterface::class  => PanelPostRepository::class,
+            PostWriteRepositoryInterface::class => PanelPostRepository::class,
+        ],
+
+        PanelCommentService::class => [
+            CommentReadRepositoryInterface::class  => PanelCommentRepository::class,
+            CommentWriteRepositoryInterface::class => PanelCommentRepository::class,
+        ],
+
+        // ── Public ─────────────────────────────────────────────────
+        PublicPostService::class => [
+            PostReadRepositoryInterface::class => PublicPostRepository::class,
+        ],
+
+        PublicCommentService::class => [
+            CommentReadRepositoryInterface::class => PublicCommentRepository::class,
+        ],
+
+        // புதிது வந்தால் இங்கே மட்டும் சேர் ↓
+    ];
+}

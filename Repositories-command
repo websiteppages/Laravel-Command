@@ -1,2 +1,16 @@
 php artisan make:command MakeRepositoryCommand
 
+php artisan make:repository Admin  Post
+
+
+output
+-------
+
+Scaffolding AdminPost repository...
+
+  [created]  Repositories/Contracts/Admin/AdminPostRepositoryInterface.php
+  [created]  Repositories/Eloquent/Admin/AdminPostRepository.php
+  [created]  Services/Admin/AdminPostService.php
+  [bound]    AppServiceProvider → AdminPostRepositoryInterface::class
+
+  ✓ AdminPost scaffold complete.

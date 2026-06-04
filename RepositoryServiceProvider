@@ -13,7 +13,9 @@ class RepositoryServiceProvider extends ServiceProvider
     public function register(): void
     {
         foreach (BindingMap::bindings() as $interface => $implementation) {
-            $this->app->bind($interface, $implementation);
+            // ✅ singleton — Repository எல்லாம் stateless,
+            //               ஒரே instance போதும்
+            $this->app->singleton($interface, $implementation);
         }
     }
 }

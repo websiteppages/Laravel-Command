@@ -1,0 +1,12 @@
+private function registerFromMap(): void
+     {
+         // BindingMap loop — automatic
+         foreach (BindingMap::$map as $service => $bindings) {
+             foreach ($bindings as $interface => $repository) {
+                 $this->app
+                     ->when($service)
+                     ->needs($interface)
+                     ->give($repository);
+             }
+         }
+     }

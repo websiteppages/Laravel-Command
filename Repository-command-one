@@ -11,12 +11,12 @@ class MakeRepositoryCommand extends Command
                             {group : Admin, Portal or Frontend}
                             {name  : e.g. Book}';
 
-    protected $description = 'Create interface, Eloquent class and register binding';
+    protected $description = 'Create interface, Eloquent class, Service and register binding';
 
     public function handle(): int
     {
-        $group    = ucfirst(strtolower($this->argument('group')));
-        $name     = ucfirst($this->argument('name'));
+        $group = ucfirst(strtolower($this->argument('group')));
+        $name  = ucfirst($this->argument('name'));
 
         $allowedGroups = ['Admin', 'Portal', 'Frontend'];
 
@@ -25,13 +25,18 @@ class MakeRepositoryCommand extends Command
             return Command::FAILURE;
         }
 
+        $this->newLine();
+        $this->line("  <fg=cyan>Scaffolding</> {$group}{$name} repository...");
+        $this->newLine();
+
         $this->makeInterface($group, $name);
         $this->makeEloquent($group, $name);
         $this->makeService($group, $name);
         $this->registerBinding($group, $name);
 
         $this->newLine();
-        $this->info("✓ {$group}{$name} repository scaffold complete.");
+        $this->info("  ✓ {$group}{$name} scaffold complete.");
+        $this->newLine();
 
         return Command::SUCCESS;
     }
@@ -45,14 +50,12 @@ class MakeRepositoryCommand extends Command
         $path      = app_path("Repositories/Contracts/{$group}/{$className}.php");
 
         if (File::exists($path)) {
-            $this->warn("  [skip] Interface already exists: Repositories/Contracts/{$group}/{$className}.php");
+            $this->warn("  [skip]    Repositories/Contracts/{$group}/{$className}.php");
             return;
         }
 
         File::ensureDirectoryExists(dirname($path));
-
         File::put($path, $this->interfaceStub($group, $name, $className));
-
         $this->line("  <fg=green>[created]</> Repositories/Contracts/{$group}/{$className}.php");
     }
 
@@ -66,14 +69,12 @@ class MakeRepositoryCommand extends Command
         $path          = app_path("Repositories/Eloquent/{$group}/{$className}.php");
 
         if (File::exists($path)) {
-            $this->warn("  [skip] Eloquent class already exists: Repositories/Eloquent/{$group}/{$className}.php");
+            $this->warn("  [skip]    Repositories/Eloquent/{$group}/{$className}.php");
             return;
         }
 
         File::ensureDirectoryExists(dirname($path));
-
         File::put($path, $this->eloquentStub($group, $name, $className, $interfaceName));
-
         $this->line("  <fg=green>[created]</> Repositories/Eloquent/{$group}/{$className}.php");
     }
 
@@ -87,107 +88,161 @@ class MakeRepositoryCommand extends Command
         $path          = app_path("Services/{$group}/{$className}.php");
 
         if (File::exists($path)) {
-            $this->warn("  [skip] Service already exists: Services/{$group}/{$className}.php");
+            $this->warn("  [skip]    Services/{$group}/{$className}.php");
             return;
         }
 
         File::ensureDirectoryExists(dirname($path));
-
         File::put($path, $this->serviceStub($group, $name, $className, $repoInterface));
-
         $this->line("  <fg=green>[created]</> Services/{$group}/{$className}.php");
     }
 
     // ─────────────────────────────────────────
-    // 4. Auto-register binding
+    // 4. Register binding in BindingMap
     // ─────────────────────────────────────────
     private function registerBinding(string $group, string $name): void
     {
-        $providerPath  = app_path('Providers/AppServiceProvider.php');
-        $content       = File::get($providerPath);
-
-        $interfaceFQN  = "App\\Repositories\\Contracts\\{$group}\\{$group}{$name}RepositoryInterface";
-        $eloquentFQN   = "App\\Repositories\\Eloquent\\{$group}\\{$group}{$name}Repository";
+        $bindingMapPath = app_path('Repositories/BindingMap.php');
         $interfaceClass = "{$group}{$name}RepositoryInterface";
         $eloquentClass  = "{$group}{$name}Repository";
+        $interfaceFQN   = "App\\Repositories\\Contracts\\{$group}\\{$interfaceClass}";
+        $eloquentFQN    = "App\\Repositories\\Eloquent\\{$group}\\{$eloquentClass}";
 
+        // ── Create BindingMap.php if it does not exist yet ────────
+        if (!File::exists($bindingMapPath)) {
+            File::ensureDirectoryExists(dirname($bindingMapPath));
+            File::put($bindingMapPath, $this->bindingMapStub());
+            $this->line("  <fg=green>[created]</> Repositories/BindingMap.php");
+        }
+
+        $content = File::get($bindingMapPath);
+
+        // ── Skip if already registered ────────────────────────────
         if (str_contains($content, $interfaceClass . '::class')) {
-            $this->warn("  [skip] Binding already registered in AppServiceProvider.");
+            $this->warn("  [skip]    Binding already exists in BindingMap.");
             return;
         }
 
-        // Add use statements
-        $useBlock = "use {$interfaceFQN};\nuse {$eloquentFQN};";
-        $content  = preg_replace(
-            '/(^use [^\n]+;\n)(?!use )/m',
-            "$1{$useBlock}\n",
-            $content,
-            1
-        );
+        // ── Inject use statements ─────────────────────────────────
+        // Handles two cases:
+        //   1. BindingMap already has use statements → append after last one
+        //   2. Fresh BindingMap with no use statements → insert after namespace
+        $useLines = "use {$interfaceFQN};\nuse {$eloquentFQN};";
 
-        // Add binding inside register()
-        $binding = "\n        \$this->app->bind({$interfaceClass}::class, {$eloquentClass}::class);";
+        if (preg_match('/^use\s+\S/m', $content)) {
+            // Append after the last consecutive use block
+            $content = preg_replace(
+                '/((?:^use [^\n]+;\n)+)(?!use )/m',
+                "$1{$useLines}\n",
+                $content,
+                1
+            );
+        } else {
+            // No use statements yet — insert after namespace declaration
+            $content = preg_replace(
+                '/(^namespace [^\n]+;\n)/m',
+                "$1\n{$useLines}\n",
+                $content,
+                1
+            );
+        }
+
+        // ── Inject binding entry inside the bindings() array ─────
+        $entry   = "\n            {$interfaceClass}::class => {$eloquentClass}::class,";
         $content = preg_replace(
-            '/(public function register\(\).*?\{)/s',
-            "$1{$binding}",
+            '/(\/\/ bindings)/',
+            "$1{$entry}",
             $content
         );
 
-        File::put($providerPath, $content);
-
-        $this->line("  <fg=green>[bound]</>   AppServiceProvider → {$interfaceClass}");
+        File::put($bindingMapPath, $content);
+        $this->line("  <fg=green>[bound]</>   BindingMap → {$interfaceClass}::class");
     }
 
-    // ─────────────────────────────────────────
-    // Stubs
-    // ─────────────────────────────────────────
+    // ══════════════════════════════════════════════════════════════
+    //  STUBS
+    // ══════════════════════════════════════════════════════════════
+
     private function interfaceStub(string $group, string $name, string $className): string
     {
         return <<<PHP
-        <?php
+<?php
 
-        namespace App\Repositories\Contracts\\{$group};
+namespace App\Repositories\Contracts\\{$group};
 
-        interface {$className}
-        {
-            // Define {$group} {$name} contract methods here
-        }
-        PHP;
+interface {$className}
+{
+    // Define {$group} {$name} contract methods here
+}
+PHP;
     }
 
-    private function eloquentStub(string $group, string $name, string $className, string $interfaceName): string
-    {
+    private function eloquentStub(
+        string $group,
+        string $name,
+        string $className,
+        string $interfaceName
+    ): string {
         return <<<PHP
-        <?php
+<?php
 
-        namespace App\Repositories\Eloquent\\{$group};
+namespace App\Repositories\Eloquent\\{$group};
 
-        use App\Repositories\Contracts\\{$group}\\{$interfaceName};
+use App\Repositories\Contracts\\{$group}\\{$interfaceName};
 
-        class {$className} implements {$interfaceName}
-        {
-            // Implement {$group} {$name} repository methods here
-        }
-        PHP;
+class {$className} implements {$interfaceName}
+{
+    // Implement {$group} {$name} repository methods here
+}
+PHP;
     }
 
-    private function serviceStub(string $group, string $name, string $className, string $repoInterface): string
-    {
+    private function serviceStub(
+        string $group,
+        string $name,
+        string $className,
+        string $repoInterface
+    ): string {
         return <<<PHP
-        <?php
+<?php
 
-        namespace App\Services\\{$group};
+namespace App\Services\\{$group};
 
-        use App\Repositories\Contracts\\{$group}\\{$repoInterface};
+use App\Repositories\Contracts\\{$group}\\{$repoInterface};
 
-        class {$className}
-        {
-            public function __construct(
-                private {$repoInterface} \$repository
-            ) {}
+class {$className}
+{
+    public function __construct(
+        private {$repoInterface} \$repository
+    ) {}
 
-            // Add {$group} {$name} business logic here
-        }
-        PHP;
+    // Add {$group} {$name} business logic here
+}
+PHP;
+    }
+
+    private function bindingMapStub(): string
+    {
+        return <<<'PHP'
+<?php
+
+namespace App\Repositories;
+
+class BindingMap
+{
+    /**
+     * All interface → implementation bindings.
+     * Loaded automatically by RepositoryServiceProvider.
+     *
+     * @return array<class-string, class-string>
+     */
+    public static function bindings(): array
+    {
+        return [
+            // bindings
+        ];
+    }
+}
+PHP;
     }
 }

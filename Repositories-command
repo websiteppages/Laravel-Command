@@ -3,14 +3,11 @@ php artisan make:command MakeRepositoryCommand
 php artisan make:repository Admin  Post
 
 
-output
--------
-
-Scaffolding AdminPost repository...
-
-  [created]  Repositories/Contracts/Admin/AdminPostRepositoryInterface.php
-  [created]  Repositories/Eloquent/Admin/AdminPostRepository.php
-  [created]  Services/Admin/AdminPostService.php
-  [bound]    AppServiceProvider → AdminPostRepositoryInterface::class
-
-  ✓ AdminPost scaffold complete.
+Configure AdminPost — press Enter to accept defaults.
+-------------------------------------------------------
+  Search column for post [title]:         ← Enter
+  Does post use SoftDeletes? (yes/no) [no]: yes
+  Does post have a slug column? (yes/no) [no]: yes
+  Does post belong to a category? (yes/no) [no]: yes
+  Does post have an is_featured column? (yes/no) [no]: yes
+  Does post belong to a user (user_id)? (yes/no) [no]: no

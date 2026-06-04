@@ -1,0 +1,711 @@
+<?php
+
+namespace App\Console\Commands;
+
+use Illuminate\Console\Command;
+use Illuminate\Support\Facades\File;
+use Illuminate\Support\Str;
+
+class MakeRepositoryCommand extends Command
+{
+    protected $signature = 'make:repository
+                            {group   : Admin | Portal | Frontend}
+                            {name    : e.g. Post | Book | Category | Tag}
+                            {--searchable= : Column used for search, e.g. title|name|slug (default: title)}
+                            {--sluggable   : Whether this model has a slug column}
+                            {--categorised : Whether this model belongs to a category}
+                            {--featured    : Whether this model has an is_featured column}
+                            {--user-owned  : Whether this model belongs to a user}
+                            {--soft-delete : Whether this model uses SoftDeletes}
+                            {--no-interact : Skip interactive prompts and use option flags only}';
+
+    protected $description = 'Scaffold a repository interface, Eloquent class, and Service with group-aware default methods';
+
+    // Resolved config used across all generators
+    private string  $group;
+    private string  $name;
+    private string  $lower;
+    private string  $searchColumn;
+    private bool    $sluggable;
+    private bool    $categorised;
+    private bool    $featured;
+    private bool    $userOwned;
+    private bool    $softDelete;
+
+    public function handle(): int
+    {
+        $this->group = ucfirst(strtolower($this->argument('group')));
+        $this->name  = ucfirst($this->argument('name'));
+        $this->lower = strtolower($this->name);
+
+        if (!in_array($this->group, ['Admin', 'Portal', 'Frontend'])) {
+            $this->error("Group must be one of: Admin, Portal, Frontend");
+            return Command::FAILURE;
+        }
+
+        // ── Resolve config via prompts or flags ──────────────────
+        $this->resolveConfig();
+
+        // ── Scaffold ─────────────────────────────────────────────
+        $this->newLine();
+        $this->line("  <fg=cyan;options=bold>Scaffolding</> {$this->group}{$this->name}...");
+        $this->newLine();
+
+        $this->makeInterface();
+        $this->makeEloquent();
+        $this->makeService();
+        $this->registerBinding();
+
+        $this->newLine();
+        $this->info("  ✓ {$this->group}{$this->name} scaffold complete.");
+        $this->newLine();
+
+        return Command::SUCCESS;
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    //  CONFIG RESOLUTION
+    // ══════════════════════════════════════════════════════════════
+    private function resolveConfig(): void
+    {
+        $noInteract = $this->option('no-interact');
+
+        // Guess smart defaults based on the model name
+        $isNameBased = in_array($this->lower, ['category', 'tag', 'role', 'permission', 'menu', 'label']);
+
+        $defaultSearchCol = $isNameBased ? 'name' : 'title';
+
+        if ($noInteract) {
+            // Use flags directly
+            $this->searchColumn = $this->option('searchable') ?? $defaultSearchCol;
+            $this->sluggable    = (bool) $this->option('sluggable');
+            $this->categorised  = (bool) $this->option('categorised');
+            $this->featured     = (bool) $this->option('featured');
+            $this->userOwned    = (bool) $this->option('user-owned');
+            $this->softDelete   = (bool) $this->option('soft-delete');
+            return;
+        }
+
+        // ── Interactive prompts ──────────────────────────────────
+        $this->newLine();
+        $this->line("  <fg=yellow>Configure</> {$this->group}{$this->name} — press Enter to accept defaults.");
+        $this->newLine();
+
+        $this->searchColumn = $this->ask(
+            "  Search column for {$this->lower}",
+            $this->option('searchable') ?? $defaultSearchCol
+        );
+
+        $this->softDelete = $this->confirm(
+            "  Does {$this->lower} use SoftDeletes?",
+            (bool) $this->option('soft-delete')
+        );
+
+        $this->sluggable = $this->confirm(
+            "  Does {$this->lower} have a slug column?",
+            (bool) $this->option('sluggable')
+        );
+
+        $this->categorised = $this->confirm(
+            "  Does {$this->lower} belong to a category?",
+            (bool) $this->option('categorised')
+        );
+
+        $this->featured = $this->confirm(
+            "  Does {$this->lower} have an is_featured column?",
+            (bool) $this->option('featured')
+        );
+
+        $this->userOwned = $this->confirm(
+            "  Does {$this->lower} belong to a user (user_id)?",
+            (bool) $this->option('user-owned')
+        );
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    //  FILE GENERATORS
+    // ══════════════════════════════════════════════════════════════
+    private function makeInterface(): void
+    {
+        $className = "{$this->group}{$this->name}RepositoryInterface";
+        $path      = app_path("Repositories/Contracts/{$this->group}/{$className}.php");
+
+        if (File::exists($path)) {
+            $this->warn("  [skip]    Repositories/Contracts/{$this->group}/{$className}.php");
+            return;
+        }
+
+        File::ensureDirectoryExists(dirname($path));
+        File::put($path, $this->interfaceStub($className));
+        $this->line("  <fg=green>[created]</> Repositories/Contracts/{$this->group}/{$className}.php");
+    }
+
+    private function makeEloquent(): void
+    {
+        $className     = "{$this->group}{$this->name}Repository";
+        $interfaceName = "{$this->group}{$this->name}RepositoryInterface";
+        $path          = app_path("Repositories/Eloquent/{$this->group}/{$className}.php");
+
+        if (File::exists($path)) {
+            $this->warn("  [skip]    Repositories/Eloquent/{$this->group}/{$className}.php");
+            return;
+        }
+
+        File::ensureDirectoryExists(dirname($path));
+        File::put($path, $this->eloquentStub($className, $interfaceName));
+        $this->line("  <fg=green>[created]</> Repositories/Eloquent/{$this->group}/{$className}.php");
+    }
+
+    private function makeService(): void
+    {
+        $className     = "{$this->group}{$this->name}Service";
+        $repoInterface = "{$this->group}{$this->name}RepositoryInterface";
+        $path          = app_path("Services/{$this->group}/{$className}.php");
+
+        if (File::exists($path)) {
+            $this->warn("  [skip]    Services/{$this->group}/{$className}.php");
+            return;
+        }
+
+        File::ensureDirectoryExists(dirname($path));
+        File::put($path, $this->serviceStub($className, $repoInterface));
+        $this->line("  <fg=green>[created]</> Services/{$this->group}/{$className}.php");
+    }
+
+    private function registerBinding(): void
+    {
+        $providerPath   = app_path('Providers/AppServiceProvider.php');
+        $content        = File::get($providerPath);
+        $interfaceClass = "{$this->group}{$this->name}RepositoryInterface";
+        $eloquentClass  = "{$this->group}{$this->name}Repository";
+        $interfaceFQN   = "App\\Repositories\\Contracts\\{$this->group}\\{$interfaceClass}";
+        $eloquentFQN    = "App\\Repositories\\Eloquent\\{$this->group}\\{$eloquentClass}";
+
+        if (str_contains($content, "{$interfaceClass}::class")) {
+            $this->warn("  [skip]    Binding already exists in AppServiceProvider.");
+            return;
+        }
+
+        $useBlock = "use {$interfaceFQN};\nuse {$eloquentFQN};";
+        $content  = preg_replace(
+            '/(^use [^\n]+;\n)(?!use )/m',
+            "$1{$useBlock}\n",
+            $content,
+            1
+        );
+
+        $binding = "\n        \$this->app->bind({$interfaceClass}::class, {$eloquentClass}::class);";
+        $content = preg_replace(
+            '/(public function register\(\).*?\{)/s',
+            "$1{$binding}",
+            $content
+        );
+
+        File::put($providerPath, $content);
+        $this->line("  <fg=green>[bound]</>   AppServiceProvider → {$interfaceClass}::class");
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    //  STUBS
+    // ══════════════════════════════════════════════════════════════
+    private function interfaceStub(string $className): string
+    {
+        $methods = $this->buildInterfaceMethods();
+
+        return <<<PHP
+<?php
+
+namespace App\Repositories\Contracts\\{$this->group};
+
+use Illuminate\Pagination\LengthAwarePaginator;
+use Illuminate\Database\Eloquent\Collection;
+
+interface {$className}
+{
+{$methods}
+}
+PHP;
+    }
+
+    private function eloquentStub(string $className, string $interfaceName): string
+    {
+        $implementations = $this->buildEloquentImplementations();
+
+        $softDeleteTrait = $this->softDelete
+            ? "\nuse Illuminate\Database\Eloquent\SoftDeletes;"
+            : '';
+
+        return <<<PHP
+<?php
+
+namespace App\Repositories\Eloquent\\{$this->group};
+
+use App\Models\\{$this->name};
+use App\Repositories\Contracts\\{$this->group}\\{$interfaceName};
+use Illuminate\Pagination\LengthAwarePaginator;
+use Illuminate\Database\Eloquent\Collection;{$softDeleteTrait}
+
+class {$className} implements {$interfaceName}
+{
+    public function __construct(
+        protected {$this->name} \$model
+    ) {}
+
+{$implementations}
+}
+PHP;
+    }
+
+    private function serviceStub(string $className, string $repoInterface): string
+    {
+        $methods = $this->buildServiceMethods();
+
+        return <<<PHP
+<?php
+
+namespace App\Services\\{$this->group};
+
+use App\Repositories\Contracts\\{$this->group}\\{$repoInterface};
+use Illuminate\Pagination\LengthAwarePaginator;
+use Illuminate\Database\Eloquent\Collection;
+
+class {$className}
+{
+    public function __construct(
+        private {$repoInterface} \$repository
+    ) {}
+
+{$methods}
+}
+PHP;
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    //  METHOD BUILDERS
+    // ══════════════════════════════════════════════════════════════
+
+    // ── Interface ─────────────────────────────────────────────────
+    private function buildInterfaceMethods(): string
+    {
+        $m = [];
+
+        // Common CRUD
+        $m[] = $this->block('Common CRUD', <<<PHP
+    public function getAll(): Collection;
+    public function getPaginated(int \$perPage = 15): LengthAwarePaginator;
+    public function findById(int \$id): ?object;
+    public function create(array \$data): object;
+    public function update(int \$id, array \$data): bool;
+    public function delete(int \$id): bool;
+PHP);
+
+        // Search
+        $m[] = $this->block('Search', <<<PHP
+    public function search(string \$keyword): Collection;
+PHP);
+
+        // Slug
+        if ($this->sluggable) {
+            $m[] = $this->block('Slug', <<<PHP
+    public function findBySlug(string \$slug): ?object;
+PHP);
+        }
+
+        // Category
+        if ($this->categorised) {
+            $m[] = $this->block('Category', <<<PHP
+    public function getByCategory(int \$categoryId): Collection;
+PHP);
+        }
+
+        // Featured
+        if ($this->featured) {
+            $m[] = $this->block('Featured', <<<PHP
+    public function getFeatured(int \$limit = 6): Collection;
+PHP);
+        }
+
+        // User owned
+        if ($this->userOwned) {
+            $m[] = $this->block('User Scoped', <<<PHP
+    public function getByUser(int \$userId): Collection;
+PHP);
+        }
+
+        // Status
+        $m[] = $this->block('Status', <<<PHP
+    public function getActive(): Collection;
+    public function toggleStatus(int \$id): bool;
+PHP);
+
+        // Admin extras
+        if ($this->group === 'Admin') {
+            $m[] = $this->block('Admin Controls', <<<PHP
+    public function bulkDelete(array \$ids): bool;
+PHP);
+
+            if ($this->softDelete) {
+                $m[] = $this->block('Soft Delete', <<<PHP
+    public function getTrashed(): Collection;
+    public function restore(int \$id): bool;
+    public function forceDelete(int \$id): bool;
+PHP);
+            }
+        }
+
+        // Portal extras
+        if ($this->group === 'Portal') {
+            $m[] = $this->block('Portal', <<<PHP
+    public function getRecent(int \$limit = 10): Collection;
+    public function getByStatus(string \$status): Collection;
+PHP);
+        }
+
+        // Frontend extras
+        if ($this->group === 'Frontend') {
+            $m[] = $this->block('Frontend', <<<PHP
+    public function getPublished(): Collection;
+    public function getRelated(int \$id, int \$limit = 4): Collection;
+PHP);
+        }
+
+        return implode("\n", $m);
+    }
+
+    // ── Eloquent ──────────────────────────────────────────────────
+    private function buildEloquentImplementations(): string
+    {
+        $m = [];
+
+        // Common CRUD
+        $m[] = $this->block('Common CRUD', <<<PHP
+    public function getAll(): Collection
+    {
+        return \$this->model->all();
+    }
+
+    public function getPaginated(int \$perPage = 15): LengthAwarePaginator
+    {
+        return \$this->model->latest()->paginate(\$perPage);
+    }
+
+    public function findById(int \$id): ?object
+    {
+        return \$this->model->find(\$id);
+    }
+
+    public function create(array \$data): object
+    {
+        return \$this->model->create(\$data);
+    }
+
+    public function update(int \$id, array \$data): bool
+    {
+        return (bool) \$this->model->where('id', \$id)->update(\$data);
+    }
+
+    public function delete(int \$id): bool
+    {
+        return (bool) \$this->model->destroy(\$id);
+    }
+PHP);
+
+        // Search — uses resolved column
+        $col = $this->searchColumn;
+        $m[] = $this->block('Search', <<<PHP
+    public function search(string \$keyword): Collection
+    {
+        return \$this->model->where('{$col}', 'like', "%{\$keyword}%")->get();
+    }
+PHP);
+
+        // Slug
+        if ($this->sluggable) {
+            $m[] = $this->block('Slug', <<<PHP
+    public function findBySlug(string \$slug): ?object
+    {
+        return \$this->model->where('slug', \$slug)->first();
+    }
+PHP);
+        }
+
+        // Category
+        if ($this->categorised) {
+            $m[] = $this->block('Category', <<<PHP
+    public function getByCategory(int \$categoryId): Collection
+    {
+        return \$this->model->where('category_id', \$categoryId)->get();
+    }
+PHP);
+        }
+
+        // Featured
+        if ($this->featured) {
+            $m[] = $this->block('Featured', <<<PHP
+    public function getFeatured(int \$limit = 6): Collection
+    {
+        return \$this->model->where('is_featured', true)->latest()->limit(\$limit)->get();
+    }
+PHP);
+        }
+
+        // User owned
+        if ($this->userOwned) {
+            $m[] = $this->block('User Scoped', <<<PHP
+    public function getByUser(int \$userId): Collection
+    {
+        return \$this->model->where('user_id', \$userId)->latest()->get();
+    }
+PHP);
+        }
+
+        // Status
+        $m[] = $this->block('Status', <<<PHP
+    public function getActive(): Collection
+    {
+        return \$this->model->where('status', 'active')->latest()->get();
+    }
+
+    public function toggleStatus(int \$id): bool
+    {
+        \$record = \$this->model->findOrFail(\$id);
+        \$record->status = !\$record->status;
+        return \$record->save();
+    }
+PHP);
+
+        // Admin extras
+        if ($this->group === 'Admin') {
+            $m[] = $this->block('Admin Controls', <<<PHP
+    public function bulkDelete(array \$ids): bool
+    {
+        return (bool) \$this->model->whereIn('id', \$ids)->delete();
+    }
+PHP);
+
+            if ($this->softDelete) {
+                $m[] = $this->block('Soft Delete', <<<PHP
+    public function getTrashed(): Collection
+    {
+        return \$this->model->onlyTrashed()->get();
+    }
+
+    public function restore(int \$id): bool
+    {
+        return (bool) \$this->model->onlyTrashed()->findOrFail(\$id)->restore();
+    }
+
+    public function forceDelete(int \$id): bool
+    {
+        return (bool) \$this->model->onlyTrashed()->findOrFail(\$id)->forceDelete();
+    }
+PHP);
+            }
+        }
+
+        // Portal extras
+        if ($this->group === 'Portal') {
+            $m[] = $this->block('Portal', <<<PHP
+    public function getRecent(int \$limit = 10): Collection
+    {
+        return \$this->model->latest()->limit(\$limit)->get();
+    }
+
+    public function getByStatus(string \$status): Collection
+    {
+        return \$this->model->where('status', \$status)->latest()->get();
+    }
+PHP);
+        }
+
+        // Frontend extras
+        if ($this->group === 'Frontend') {
+            $m[] = $this->block('Frontend', <<<PHP
+    public function getPublished(): Collection
+    {
+        return \$this->model->where('status', 'published')->latest()->get();
+    }
+
+    public function getRelated(int \$id, int \$limit = 4): Collection
+    {
+        \$record = \$this->model->findOrFail(\$id);
+        return \$this->model->where('category_id', \$record->category_id)
+            ->where('id', '!=', \$id)
+            ->limit(\$limit)
+            ->get();
+    }
+PHP);
+        }
+
+        return implode("\n", $m);
+    }
+
+    // ── Service ───────────────────────────────────────────────────
+    private function buildServiceMethods(): string
+    {
+        $m = [];
+
+        // Common CRUD
+        $m[] = $this->block('Common CRUD', <<<PHP
+    public function getAll(): Collection
+    {
+        return \$this->repository->getAll();
+    }
+
+    public function getPaginated(int \$perPage = 15): LengthAwarePaginator
+    {
+        return \$this->repository->getPaginated(\$perPage);
+    }
+
+    public function findById(int \$id): ?object
+    {
+        return \$this->repository->findById(\$id);
+    }
+
+    public function create(array \$data): object
+    {
+        return \$this->repository->create(\$data);
+    }
+
+    public function update(int \$id, array \$data): bool
+    {
+        return \$this->repository->update(\$id, \$data);
+    }
+
+    public function delete(int \$id): bool
+    {
+        return \$this->repository->delete(\$id);
+    }
+PHP);
+
+        // Search
+        $m[] = $this->block('Search', <<<PHP
+    public function search(string \$keyword): Collection
+    {
+        return \$this->repository->search(\$keyword);
+    }
+PHP);
+
+        // Slug
+        if ($this->sluggable) {
+            $m[] = $this->block('Slug', <<<PHP
+    public function findBySlug(string \$slug): ?object
+    {
+        return \$this->repository->findBySlug(\$slug);
+    }
+PHP);
+        }
+
+        // Category
+        if ($this->categorised) {
+            $m[] = $this->block('Category', <<<PHP
+    public function getByCategory(int \$categoryId): Collection
+    {
+        return \$this->repository->getByCategory(\$categoryId);
+    }
+PHP);
+        }
+
+        // Featured
+        if ($this->featured) {
+            $m[] = $this->block('Featured', <<<PHP
+    public function getFeatured(int \$limit = 6): Collection
+    {
+        return \$this->repository->getFeatured(\$limit);
+    }
+PHP);
+        }
+
+        // User owned
+        if ($this->userOwned) {
+            $m[] = $this->block('User Scoped', <<<PHP
+    public function getByUser(int \$userId): Collection
+    {
+        return \$this->repository->getByUser(\$userId);
+    }
+PHP);
+        }
+
+        // Status
+        $m[] = $this->block('Status', <<<PHP
+    public function getActive(): Collection
+    {
+        return \$this->repository->getActive();
+    }
+
+    public function toggleStatus(int \$id): bool
+    {
+        return \$this->repository->toggleStatus(\$id);
+    }
+PHP);
+
+        // Admin extras
+        if ($this->group === 'Admin') {
+            $m[] = $this->block('Admin Controls', <<<PHP
+    public function bulkDelete(array \$ids): bool
+    {
+        return \$this->repository->bulkDelete(\$ids);
+    }
+PHP);
+
+            if ($this->softDelete) {
+                $m[] = $this->block('Soft Delete', <<<PHP
+    public function getTrashed(): Collection
+    {
+        return \$this->repository->getTrashed();
+    }
+
+    public function restore(int \$id): bool
+    {
+        return \$this->repository->restore(\$id);
+    }
+
+    public function forceDelete(int \$id): bool
+    {
+        return \$this->repository->forceDelete(\$id);
+    }
+PHP);
+            }
+        }
+
+        // Portal extras
+        if ($this->group === 'Portal') {
+            $m[] = $this->block('Portal', <<<PHP
+    public function getRecent(int \$limit = 10): Collection
+    {
+        return \$this->repository->getRecent();
+    }
+
+    public function getByStatus(string \$status): Collection
+    {
+        return \$this->repository->getByStatus(\$status);
+    }
+PHP);
+        }
+
+        // Frontend extras
+        if ($this->group === 'Frontend') {
+            $m[] = $this->block('Frontend', <<<PHP
+    public function getPublished(): Collection
+    {
+        return \$this->repository->getPublished();
+    }
+
+    public function getRelated(int \$id, int \$limit = 4): Collection
+    {
+        return \$this->repository->getRelated(\$id, \$limit);
+    }
+PHP);
+        }
+
+        return implode("\n", $m);
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    //  HELPER
+    // ══════════════════════════════════════════════════════════════
+    private function block(string $title, string $body): string
+    {
+        return "    // ── {$title} " . str_repeat('─', max(0, 50 - strlen($title))) . "\n\n{$body}\n";
+    }
+}

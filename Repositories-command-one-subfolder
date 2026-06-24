@@ -1,0 +1,303 @@
+<?php
+
+namespace App\Console\Commands;
+
+use Illuminate\Console\Command;
+use Illuminate\Support\Facades\File;
+
+class MakeRepositoryCommand extends Command
+{
+    protected $signature = 'make:repository
+                            {group : Admin, Portal or Frontend}
+                            {name  : e.g. Book  OR  Payment/PaymentController  (nested)}';
+
+    protected $description = 'Create interface, Eloquent class, Service and register binding';
+
+    public function handle(): int
+    {
+        $group = ucfirst(strtolower($this->argument('group')));
+        $raw   = $this->argument('name');          // e.g. "Payment/PaymentController"
+
+        $allowedGroups = ['Admin', 'Portal', 'Frontend'];
+
+        if (!in_array($group, $allowedGroups)) {
+            $this->error("Group must be one of: " . implode(', ', $allowedGroups));
+            return Command::FAILURE;
+        }
+
+        // ── Parse name into (subPath, baseName) ──────────────────
+        // "PaymentController"          → subPath = '',          baseName = 'PaymentController'
+        // "Payment/PaymentController"  → subPath = 'Payment',   baseName = 'PaymentController'
+        // "A/B/PaymentController"      → subPath = 'A/B',       baseName = 'PaymentController'
+        $segments = array_filter(
+            array_map(fn($s) => ucfirst($s), explode('/', $raw))
+        );
+
+        $baseName = ucfirst(array_pop($segments));   // last segment = class name
+        $subPath  = implode('/', $segments);         // remaining = sub-folder path
+
+        $this->newLine();
+        $label = $subPath ? "{$subPath}/{$baseName}" : $baseName;
+        $this->line("  <fg=cyan>Scaffolding</> {$group} / {$label} repository...");
+        $this->newLine();
+
+        $this->makeInterface($group, $baseName, $subPath);
+        $this->makeEloquent($group, $baseName, $subPath);
+        $this->makeService($group, $baseName, $subPath);
+        $this->registerBinding($group, $baseName, $subPath);
+
+        $this->newLine();
+        $this->info("  ✓ {$group} {$label} scaffold complete.");
+        $this->newLine();
+
+        return Command::SUCCESS;
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // Helpers
+    // ─────────────────────────────────────────────────────────────
+
+    /**
+     * Build the full namespace suffix for a given group + optional subPath.
+     *
+     * group=Admin, subPath=''              → Admin
+     * group=Admin, subPath=Payment         → Admin\Payment
+     * group=Admin, subPath=Payment/Detail  → Admin\Payment\Detail
+     */
+    private function ns(string $group, string $subPath): string
+    {
+        return $subPath
+            ? $group . '\\' . str_replace('/', '\\', $subPath)
+            : $group;
+    }
+
+    /**
+     * Build the filesystem sub-directory for a group + optional subPath.
+     *
+     * group=Admin, subPath=''              → Admin
+     * group=Admin, subPath=Payment         → Admin/Payment
+     */
+    private function dir(string $group, string $subPath): string
+    {
+        return $subPath ? "{$group}/{$subPath}" : $group;
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // 1. Interface
+    // ─────────────────────────────────────────────────────────────
+    private function makeInterface(string $group, string $name, string $subPath): void
+    {
+        $className = "{$group}{$name}RepositoryInterface";
+        $dir       = $this->dir($group, $subPath);
+        $path      = app_path("Repositories/Contracts/{$dir}/{$className}.php");
+        $relPath   = "Repositories/Contracts/{$dir}/{$className}.php";
+
+        if (File::exists($path)) {
+            $this->warn("  [skip]    {$relPath}");
+            return;
+        }
+
+        File::ensureDirectoryExists(dirname($path));
+        File::put($path, $this->interfaceStub($group, $name, $subPath, $className));
+        $this->line("  <fg=green>[created]</> {$relPath}");
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // 2. Eloquent Repository
+    // ─────────────────────────────────────────────────────────────
+    private function makeEloquent(string $group, string $name, string $subPath): void
+    {
+        $className     = "{$group}{$name}Repository";
+        $interfaceName = "{$group}{$name}RepositoryInterface";
+        $dir           = $this->dir($group, $subPath);
+        $path          = app_path("Repositories/Eloquent/{$dir}/{$className}.php");
+        $relPath       = "Repositories/Eloquent/{$dir}/{$className}.php";
+
+        if (File::exists($path)) {
+            $this->warn("  [skip]    {$relPath}");
+            return;
+        }
+
+        File::ensureDirectoryExists(dirname($path));
+        File::put($path, $this->eloquentStub($group, $name, $subPath, $className, $interfaceName));
+        $this->line("  <fg=green>[created]</> {$relPath}");
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // 3. Service
+    // ─────────────────────────────────────────────────────────────
+    private function makeService(string $group, string $name, string $subPath): void
+    {
+        $className     = "{$group}{$name}Service";
+        $repoInterface = "{$group}{$name}RepositoryInterface";
+        $dir           = $this->dir($group, $subPath);
+        $path          = app_path("Services/{$dir}/{$className}.php");
+        $relPath       = "Services/{$dir}/{$className}.php";
+
+        if (File::exists($path)) {
+            $this->warn("  [skip]    {$relPath}");
+            return;
+        }
+
+        File::ensureDirectoryExists(dirname($path));
+        File::put($path, $this->serviceStub($group, $name, $subPath, $className, $repoInterface));
+        $this->line("  <fg=green>[created]</> {$relPath}");
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // 4. Register binding in BindingMap
+    // ─────────────────────────────────────────────────────────────
+    private function registerBinding(string $group, string $name, string $subPath): void
+    {
+        $bindingMapPath = app_path('Repositories/BindingMap.php');
+        $interfaceClass = "{$group}{$name}RepositoryInterface";
+        $eloquentClass  = "{$group}{$name}Repository";
+        $ns             = $this->ns($group, $subPath);
+        $interfaceFQN   = "App\\Repositories\\Contracts\\{$ns}\\{$interfaceClass}";
+        $eloquentFQN    = "App\\Repositories\\Eloquent\\{$ns}\\{$eloquentClass}";
+
+        // ── Create BindingMap.php if it does not exist yet ───────
+        if (!File::exists($bindingMapPath)) {
+            File::ensureDirectoryExists(dirname($bindingMapPath));
+            File::put($bindingMapPath, $this->bindingMapStub());
+            $this->line("  <fg=green>[created]</> Repositories/BindingMap.php");
+        }
+
+        $content = File::get($bindingMapPath);
+
+        // ── Skip if already registered ────────────────────────────
+        if (str_contains($content, $interfaceClass . '::class')) {
+            $this->warn("  [skip]    Binding already exists in BindingMap.");
+            return;
+        }
+
+        // ── Inject use statements ─────────────────────────────────
+        $useLines = "use {$interfaceFQN};\nuse {$eloquentFQN};";
+
+        if (preg_match('/^use\s+\S/m', $content)) {
+            $content = preg_replace(
+                '/((?:^use [^\n]+;\n)+)(?!use )/m',
+                "$1{$useLines}\n",
+                $content,
+                1
+            );
+        } else {
+            $content = preg_replace(
+                '/(^namespace [^\n]+;\n)/m',
+                "$1\n{$useLines}\n",
+                $content,
+                1
+            );
+        }
+
+        // ── Inject binding entry inside the bindings() array ─────
+        $entry   = "\n            {$interfaceClass}::class => {$eloquentClass}::class,";
+        $content = preg_replace(
+            '/(\/\/ bindings)/',
+            "$1{$entry}",
+            $content
+        );
+
+        File::put($bindingMapPath, $content);
+        $this->line("  <fg=green>[bound]</>   BindingMap → {$interfaceClass}::class");
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    //  STUBS
+    // ══════════════════════════════════════════════════════════════
+
+    private function interfaceStub(
+        string $group,
+        string $name,
+        string $subPath,
+        string $className
+    ): string {
+        $ns = $this->ns($group, $subPath);
+
+        return <<<PHP
+<?php
+
+namespace App\Repositories\Contracts\\{$ns};
+
+interface {$className}
+{
+    // Define {$group} {$name} contract methods here
+}
+PHP;
+    }
+
+    private function eloquentStub(
+        string $group,
+        string $name,
+        string $subPath,
+        string $className,
+        string $interfaceName
+    ): string {
+        $ns = $this->ns($group, $subPath);
+
+        return <<<PHP
+<?php
+
+namespace App\Repositories\Eloquent\\{$ns};
+
+use App\Repositories\Contracts\\{$ns}\\{$interfaceName};
+
+class {$className} implements {$interfaceName}
+{
+    // Implement {$group} {$name} repository methods here
+}
+PHP;
+    }
+
+    private function serviceStub(
+        string $group,
+        string $name,
+        string $subPath,
+        string $className,
+        string $repoInterface
+    ): string {
+        $ns = $this->ns($group, $subPath);
+
+        return <<<PHP
+<?php
+
+namespace App\Services\\{$ns};
+
+use App\Repositories\Contracts\\{$ns}\\{$repoInterface};
+
+class {$className}
+{
+    public function __construct(
+        private {$repoInterface} \$repository
+    ) {}
+
+    // Add {$group} {$name} business logic here
+}
+PHP;
+    }
+
+    private function bindingMapStub(): string
+    {
+        return <<<'PHP'
+<?php
+
+namespace App\Repositories;
+
+class BindingMap
+{
+    /**
+     * All interface → implementation bindings.
+     * Loaded automatically by RepositoryServiceProvider.
+     *
+     * @return array<class-string, class-string>
+     */
+    public static function bindings(): array
+    {
+        return [
+            // bindings
+        ];
+    }
+}
+PHP;
+    }
+}
